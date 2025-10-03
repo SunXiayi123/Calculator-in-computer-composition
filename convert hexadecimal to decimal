@@ -1,0 +1,122 @@
+// file: src/hex_to_dec_calculator.c
+#include <stdio.h>
+#include <string.h>
+#include <ctype.h>
+#include <limits.h>
+#include <stdbool.h>
+#include <errno.h>
+#include <stdlib.h>
+
+#define MAX_LINE 4096
+#define MAX_HEX  8192
+
+/* 规范化十六进制：去空白/下划线、处理 0x 前缀、校验字符 */
+static bool sanitize_hex(const char *in, char *out, size_t outsz, const char **errmsg) {
+    while (*in && isspace((unsigned char)*in)) ++in;
+    if (in[0]=='0' && (in[1]=='x' || in[1]=='X')) in += 2;
+
+    size_t j = 0;
+    bool seen = false;
+    for (const char *p = in; *p; ++p) {
+        unsigned char c = (unsigned char)*p;
+        if (isspace(c) || c=='_') continue;
+        if (!isxdigit(c)) { *errmsg = "non-hex character"; return false; }
+        if (j + 1 >= outsz) { *errmsg = "input too long"; return false; }
+        out[j++] = (char)c;
+        seen = true;
+    }
+    if (!seen) { *errmsg = "no hex digits"; return false; }
+    out[j] = '\0';
+    return true;
+}
+
+static int hex_val(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+    if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+    return -1;
+}
+
+/* 手算式：acc = acc*16 + d；带溢出检查；可打印每步 */
+static bool hex_to_ull_checked(const char *hex, unsigned long long *out, bool verbose, const char **errmsg) {
+    unsigned long long acc = 0;
+    for (const char *p = hex; *p; ++p) {
+        int d = hex_val(*p);
+        if (d < 0) { *errmsg = "non-hex character"; return false; }
+        if (acc > (ULLONG_MAX - (unsigned long long)d) / 16ull) {
+            *errmsg = "overflow (too large for unsigned long long)";
+            return false;
+        }
+        if (verbose) {
+            printf("  acc = %llu * 16 + %d  (digit '%c')\n", acc, d, *p);
+        }
+        acc = acc * 16ull + (unsigned long long)d;
+    }
+    *out = acc;
+    return true;
+}
+
+static inline int is_exit(const char *s) { return strcmp(s, "exit")==0 || strcmp(s, "quit")==0; }
+
+static void process_token(const char *raw, bool quiet) {
+    char hex[MAX_HEX];
+    const char *err = NULL;
+
+    if (is_exit(raw)) { puts("Bye."); exit(0); }
+
+    if (!sanitize_hex(raw, hex, sizeof hex, &err)) {
+        fprintf(stderr, "[skip] %s: \"%s\"\n", err, raw);
+        return;
+    }
+
+    if (!quiet) printf("\n十六进制: %s\n", raw);
+
+    unsigned long long val = 0;
+    if (!hex_to_ull_checked(hex, &val, !quiet, &err)) {
+        fprintf(stderr, "错误: %s → \"%s\"\n", err, raw);
+        return;
+    }
+
+    if (!quiet) printf("十进制 : %llu\n", val);
+    else        printf("%llu\n", val);
+
+    /* 交叉校验：strtoull */
+    if (!quiet) {
+        errno = 0;
+        char *end = NULL;
+        unsigned long long via = strtoull(hex, &end, 16);
+        if (!errno && end && *end=='\0') {
+            printf("校验   : %llu  %s\n", via, (via==val ? "[OK]" : "[MISMATCH]"));
+        } else {
+            printf("校验   : (无法校验)\n");
+        }
+    }
+}
+
+int main(int argc, char **argv) {
+    bool quiet = false;
+
+    /* 支持 --quiet 只输出十进制数值 */
+    int argi = 1;
+    if (argc > 1 && strcmp(argv[1], "--quiet") == 0) { quiet = true; argi = 2; }
+
+    if (argc > argi) {
+        for (int i = argi; i < argc; ++i) process_token(argv[i], quiet);
+        return 0;
+    }
+
+    puts("Hex -> Decimal calculator (ASCII UI)");
+    puts("十六进制 -> 十进制 转换器（支持 0x 前缀、下划线；输入 exit/quit 或 EOF 结束）");
+    puts("Examples: FF   0x2A   1a3f   000F_FFFF");
+    printf("> ");
+
+    char line[MAX_LINE];
+    const char *delims = " \t\r\n";
+    while (fgets(line, sizeof line, stdin)) {
+        for (char *tok = strtok(line, delims); tok; tok = strtok(NULL, delims)) {
+            process_token(tok, quiet);
+        }
+        printf("> ");
+    }
+    return 0;
+}
