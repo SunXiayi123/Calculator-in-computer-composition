@@ -1,0 +1,144 @@
+// file: src/octal_to_hex_with_steps_ascii_ui_exit.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <errno.h>
+#include <stdbool.h>
+
+#define MAX_LINE 4096
+#define MAX_DIG  8192
+
+static bool sanitize_octal(const char *in, char *out, size_t outsz, const char **errmsg) {
+    size_t j = 0;
+    while (isspace((unsigned char)*in)) ++in;
+    if (in[0] == '0' && (in[1] == 'o' || in[1] == 'O')) in += 2;
+
+    bool seen = false;
+    for (const char *p = in; *p; ++p) {
+        unsigned char c = (unsigned char)*p;
+        if (isspace(c) || c == '_') continue;
+        if (c < '0' || c > '7') { *errmsg = "non-octal character"; return false; }
+        if (j + 1 >= outsz) { *errmsg = "input too long"; return false; }
+        out[j++] = (char)c;
+        seen = true;
+    }
+    if (!seen) { *errmsg = "no octal digits"; return false; }
+    out[j] = '\0';
+    return true;
+}
+
+static void octal_to_bin3(char d, char out[4]) {
+    static const char *map[8] = { "000","001","010","011","100","101","110","111" };
+    const char *m = map[d - '0'];
+    out[0]=m[0]; out[1]=m[1]; out[2]=m[2]; out[3]='\0';
+}
+
+static void build_binary_from_octal(const char *oct, char *bin, size_t binsz, char *groups, size_t groupsz) {
+    size_t b = 0, g = 0;
+    bool all_zero = true;
+    for (size_t i = 0; oct[i]; ++i) {
+        char t[4]; octal_to_bin3(oct[i], t);
+        if (g + 7 < groupsz) {                 /* 'd->bbb ' */
+            groups[g++] = oct[i]; groups[g++] = '-'; groups[g++] = '>';
+            groups[g++] = t[0]; groups[g++] = t[1]; groups[g++] = t[2]; groups[g++] = ' ';
+        }
+        if (!(t[0]=='0' && t[1]=='0' && t[2]=='0')) all_zero = false;
+        for (int k = 0; k < 3 && b + 1 < binsz; ++k) bin[b++] = t[k];
+    }
+    bin[b] = '\0'; if (g>0 && g<groupsz) groups[g-1] = '\0';
+
+    size_t i = 0; while (bin[i]=='0' && bin[i+1]!='\0') ++i;
+    if (i) memmove(bin, bin + i, strlen(bin + i) + 1);
+    if (all_zero) { bin[0]='0'; bin[1]='\0'; }
+}
+
+static void leftpad_to_nibble(const char *bin, char *padded, size_t padsz) {
+    size_t n = strlen(bin);
+    size_t rem = n % 4;
+    size_t pad = rem ? (4 - rem) : 0;
+    if (pad + n + 1 > padsz) { padded[0]='\0'; return; }
+    memset(padded, '0', pad);
+    memcpy(padded + pad, bin, n + 1);
+}
+
+static char nibble_to_hex(const char *four) {
+    int v = (four[0]-'0')*8 + (four[1]-'0')*4 + (four[2]-'0')*2 + (four[3]-'0');
+    return (char)(v < 10 ? '0' + v : 'A' + (v - 10));
+}
+
+static void binary_to_hex(const char *padded, char *hex, size_t hexsz) {
+    size_t n = strlen(padded);
+    size_t outn = n / 4;
+    if (outn + 1 > hexsz) { hex[0]='\0'; return; }
+    for (size_t i = 0; i < outn; ++i) hex[i] = nibble_to_hex(&padded[i*4]);
+    hex[outn] = '\0';
+    size_t i = 0; while (hex[i]=='0' && hex[i+1]!='\0') ++i; /* keep one '0' */
+    if (i) memmove(hex, hex + i, strlen(hex + i) + 1);
+}
+
+static void pretty_print_grouped(const char *padded) {
+    size_t n = strlen(padded);
+    for (size_t i = 0; i < n; ++i) {
+        putchar(padded[i]);
+        if ((i+1) % 4 == 0 && i+1 < n) putchar(' ');
+    }
+    putchar('\n');
+}
+
+static void process_token(const char *raw) {
+    char oct[MAX_DIG], groups[MAX_DIG*8], bin[MAX_DIG*3+1], padded[MAX_DIG*3+4], hex[MAX_DIG];
+    const char *err = NULL;
+    if (!sanitize_octal(raw, oct, sizeof(oct), &err)) {
+        fprintf(stderr, "[skip] %s: \"%s\"\n", err, raw);
+        return;
+    }
+
+    build_binary_from_octal(oct, bin, sizeof(bin), groups, sizeof(groups));
+    leftpad_to_nibble(bin, padded, sizeof(padded));
+    binary_to_hex(padded, hex, sizeof(hex));
+
+    printf("\n八进制 : %s\n", raw);
+    printf("映射   : %s\n", groups);
+    printf("二进制 : %s\n", bin);
+    printf("按4位补齐: "); pretty_print_grouped(padded);
+    printf("十六进制: 0x%s\n", hex);
+
+    errno = 0;
+    char *end = NULL;
+    unsigned long long v = strtoull(oct, &end, 8);
+    if (!errno && end && *end=='\0') {
+        char check[32];
+        snprintf(check, sizeof(check), "%llX", v);
+        printf("校验   : 0x%s  %s\n", check, (strcmp(check, hex)==0 ? "[OK]" : "[MISMATCH]"));
+    } else {
+        printf("校验   : (过大，无法用 strtoull 校验)\n");
+    }
+}
+
+static inline int is_exit_token(const char *s) {
+    return (strcmp(s, "exit") == 0) || (strcmp(s, "quit") == 0);
+}
+
+int main(int argc, char **argv) {
+    if (argc > 1) {
+        for (int i = 1; i < argc; ++i) {
+            if (is_exit_token(argv[i])) break;
+            process_token(argv[i]);
+        }
+        return 0;
+    }
+
+
+
+    char line[MAX_LINE];
+    const char *delims = " \t\r\n";
+    while (fgets(line, sizeof(line), stdin)) {
+        for (char *tok = strtok(line, delims); tok; tok = strtok(NULL, delims)) {
+            if (is_exit_token(tok)) { puts("Bye."); return 0; }
+            process_token(tok);
+        }
+        printf("> ");
+    }
+    return 0;
+}
