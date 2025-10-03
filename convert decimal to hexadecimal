@@ -1,0 +1,106 @@
+// file: src/dec_to_hex_with_steps.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+
+#define MAX_LINE 4096
+
+/* Why: strictly reject negatives/partials like "12abc" */
+static int parse_ull(const char *s, unsigned long long *out) {
+    if (!s || !*s) return 0;
+    for (const char *p = s; *p; ++p) if (*p == '-') return 0; /* non-negative only */
+    errno = 0;
+    char *end = NULL;
+    unsigned long long v = strtoull(s, &end, 10);
+    if (errno || end == s || *end != '\0') return 0;
+    *out = v;
+    return 1;
+}
+
+static char hex_digit(int r) {
+    return (char)(r < 10 ? ('0' + r) : ('A' + (r - 10)));
+}
+
+/* collect base-16 remainders into r[], return count (1..65) */
+static size_t collect_remainders16(unsigned long long x, int *r, size_t cap) {
+    if (x == 0) { r[0] = 0; return 1; }
+    size_t n = 0;
+    while (x > 0 && n < cap) {
+        r[n++] = (int)(x % 16ull);
+        x /= 16ull;
+    }
+    return n;
+}
+
+static void print_division_steps16(unsigned long long original) {
+    if (original == 0) {
+        printf("  0 ÷ 16 = 0  r:0 (0)\n");
+        return;
+    }
+    unsigned long long cur = original;
+    while (cur > 0) {
+        unsigned long long q = cur / 16ull;
+        int rem = (int)(cur % 16ull);
+        printf("  %llu ÷ 16 = %llu  r:%d (%c)\n", cur, q, rem, hex_digit(rem));
+        cur = q;
+    }
+}
+
+static void remainders_to_hex(const int *r, size_t n, char *buf, size_t bufsz) {
+    if (n + 1 > bufsz) { snprintf(buf, bufsz, "?"); return; } /* Why: avoid overflow */
+    for (size_t i = 0; i < n; ++i) buf[i] = hex_digit(r[n - 1 - i]);
+    buf[n] = '\0';
+}
+
+static void process_token(const char *tok) {
+    unsigned long long val = 0;
+    if (!parse_ull(tok, &val)) {
+        fprintf(stderr, "[skip] invalid decimal: \"%s\"\n", tok);
+        return;
+    }
+
+    int rem[65];
+    size_t n = collect_remainders16(val, rem, 65);
+    char hexbuf[65];
+    remainders_to_hex(rem, n, hexbuf, sizeof hexbuf);
+
+    printf("\nDecimal: %s\n", tok);
+    print_division_steps16(val);
+    printf("Hex (remainders ↑): 0x%s\n", hexbuf);
+
+    /* Cross-check with printf formatter */
+    char check[65];
+    snprintf(check, sizeof check, "%llX", val);
+    printf("Check  : 0x%s  %s\n", check, (strcmp(check, hexbuf) == 0 ? "[OK]" : "[MISMATCH]"));
+}
+
+static int is_exit_cmd(const char *s) {
+    return strcmp(s, "exit") == 0 || strcmp(s, "quit") == 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc > 1) {
+        for (int i = 1; i < argc; ++i) {
+            if (is_exit_cmd(argv[i])) break;
+            process_token(argv[i]);
+        }
+        return 0;
+    }
+
+    puts("Decimal -> Hex calculator");
+    puts("十进制 -> 十六进制 计算器（输入一个或多个十进制整数；输入 exit/quit 或 EOF 结束）");
+    puts("Examples: 26 0 255 4095");
+    printf("> ");
+
+    char line[MAX_LINE];
+    const char *delims = " \t\r\n";
+    while (fgets(line, sizeof line, stdin)) {
+        for (char *tok = strtok(line, delims); tok; tok = strtok(NULL, delims)) {
+            if (is_exit_cmd(tok)) { puts("Bye."); return 0; }
+            process_token(tok);
+        }
+        printf("> ");
+    }
+    return 0;
+}
